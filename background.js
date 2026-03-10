@@ -99,8 +99,21 @@ chrome.tabs.onRemoved.addListener(async (removedTabId, removeInfo) => {
     // Get all tabs in the window
     const tabs = await chrome.tabs.query({ windowId });
 
-    // If only one tab left or no tabs, nothing to do
-    if (tabs.length <= 1) {
+    // If no tabs, nothing to do
+    if (tabs.length === 0) {
+      await cleanupTabData(removedTabId);
+      return;
+    }
+
+    // If only one tab left, make sure it's focused
+    if (tabs.length === 1) {
+      await sleep(FOCUS_DELAY_MS);
+      await chrome.tabs.update(tabs[0].id, { active: true });
+
+      // Increment redirect count
+      const { redirect_count = 0 } = await chrome.storage.local.get(STORAGE_KEYS.REDIRECT_COUNT);
+      await chrome.storage.local.set({ [STORAGE_KEYS.REDIRECT_COUNT]: redirect_count + 1 });
+
       await cleanupTabData(removedTabId);
       return;
     }
