@@ -1,5 +1,9 @@
 // TabSnap - Smart tab focus behavior for Chrome
-// Uses a hybrid strategy: proximity-based with LRU fallback
+// Decides which tab to focus when you close the ACTIVE tab.
+// The strategy logic itself lives in strategies.js (pure, unit-tested).
+
+importScripts('strategies.js');
+const { STRATEGIES, pickTab } = self.TabSnapStrategies;
 
 const STORAGE_KEYS = {
   LRU_DATA: 'lru_data',
@@ -7,241 +11,149 @@ const STORAGE_KEYS = {
   REDIRECT_COUNT: 'redirect_count'
 };
 
-const STRATEGIES = {
-  PROXIMITY: 'proximity',
-  LRU: 'lru',
-  HYBRID: 'hybrid'
-};
-
-const LRU_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const FOCUS_DELAY_MS = 50; // Delay to let Chrome's default focus settle
 
-// Cache of tab indices (since onRemoved fires after tab is deleted)
-const tabIndexCache = new Map();
+// Per-window record of the active tab and its index, kept in session storage
+// so it survives the service worker going to sleep. We need it because
+// onRemoved fires after the tab is gone (no index, no "was it active?").
+const activeKey = (windowId) => `active_${windowId}`;
+
+async function rememberActiveTab(windowId) {
+  try {
+    const [tab] = await chrome.tabs.query({ windowId, active: true });
+    if (tab) {
+      await chrome.storage.session.set({ [activeKey(windowId)]: { tabId: tab.id, index: tab.index } });
+    }
+  } catch (error) {
+    // Window may be gone already
+  }
+}
 
 // Initialize extension
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('TabSnap installed');
 
-  // Set default strategy if not already set
   const { strategy } = await chrome.storage.sync.get(STORAGE_KEYS.STRATEGY);
   if (!strategy) {
     await chrome.storage.sync.set({ [STORAGE_KEYS.STRATEGY]: STRATEGIES.HYBRID });
   }
 
-  // Initialize redirect count
   const { redirect_count } = await chrome.storage.local.get(STORAGE_KEYS.REDIRECT_COUNT);
   if (redirect_count === undefined) {
     await chrome.storage.local.set({ [STORAGE_KEYS.REDIRECT_COUNT]: 0 });
   }
 
-  // Initialize LRU data for existing tabs
-  await initializeLRUData();
+  await initializeState();
 });
 
-// Initialize LRU tracking data for all existing tabs
-async function initializeLRUData() {
+chrome.runtime.onStartup.addListener(initializeState);
+
+// Seed LRU data and the active-tab record for all existing windows
+async function initializeState() {
   const tabs = await chrome.tabs.query({});
-  const lruData = {};
+  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
+  const fresh = {};
   const now = Date.now();
-
   for (const tab of tabs) {
-    lruData[tab.id] = now;
+    fresh[tab.id] = lru_data[tab.id] || now;
+    if (tab.active) {
+      await chrome.storage.session.set({ [activeKey(tab.windowId)]: { tabId: tab.id, index: tab.index } });
+    }
   }
-
-  await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: lruData });
+  await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: fresh });
 }
 
-// Update LRU timestamp when tab is activated
-chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  const { tabId, windowId } = activeInfo;
+// LRU data is read-modify-written from several listeners; run those updates
+// one at a time so they can't overwrite each other.
+let lruQueue = Promise.resolve();
+function updateLRU(mutate) {
+  lruQueue = lruQueue.then(async () => {
+    const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
+    mutate(lru_data);
+    await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: lru_data });
+  }).catch((error) => console.warn('TabSnap: LRU update failed', error));
+  return lruQueue;
+}
 
-  // Cache the tab's index for when it might be closed
-  try {
-    const tab = await chrome.tabs.get(tabId);
-    tabIndexCache.set(tabId, tab.index);
-  } catch (error) {
-    // Tab might have been closed already
-    console.warn('Could not cache tab index:', error);
-  }
-
-  // Update LRU timestamp
-  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
-  lru_data[tabId] = Date.now();
-  await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: lru_data });
+// Update LRU timestamp and active-tab record when a tab is activated
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+  await Promise.all([
+    rememberActiveTab(windowId),
+    updateLRU((lru) => { lru[tabId] = Date.now(); })
+  ]);
 });
 
-// Clean up when tab is created (add to LRU tracking)
+// New tabs join LRU tracking
 chrome.tabs.onCreated.addListener(async (tab) => {
-  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
-  lru_data[tab.id] = Date.now();
-  await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: lru_data });
+  await Promise.all([
+    rememberActiveTab(tab.windowId),
+    updateLRU((lru) => { lru[tab.id] = Date.now(); })
+  ]);
 });
+
+// Tab positions can shift without an activation; keep the active index fresh
+chrome.tabs.onMoved.addListener((tabId, { windowId }) => rememberActiveTab(windowId));
+chrome.tabs.onAttached.addListener((tabId, { newWindowId }) => rememberActiveTab(newWindowId));
+chrome.tabs.onDetached.addListener((tabId, { oldWindowId }) => rememberActiveTab(oldWindowId));
 
 // Main logic: Handle tab removal
 chrome.tabs.onRemoved.addListener(async (removedTabId, removeInfo) => {
   const { windowId, isWindowClosing } = removeInfo;
 
-  // Don't do anything if the whole window is closing
+  // Snapshot state first: Chrome activates its own pick right after this
+  // event, and that activation must not count as "most recently used".
+  const key = activeKey(windowId);
+  const [{ [key]: active }, { lru_data = {} }, { strategy = STRATEGIES.HYBRID }] = await Promise.all([
+    chrome.storage.session.get(key),
+    chrome.storage.local.get(STORAGE_KEYS.LRU_DATA),
+    chrome.storage.sync.get(STORAGE_KEYS.STRATEGY)
+  ]);
+
   if (isWindowClosing) {
+    await chrome.storage.session.remove(key);
     await cleanupTabData(removedTabId);
     return;
   }
 
   try {
-    // Get current strategy
-    const { strategy = STRATEGIES.HYBRID } = await chrome.storage.sync.get(STORAGE_KEYS.STRATEGY);
-
-    // Get the cached index of the removed tab
-    const removedTabIndex = tabIndexCache.get(removedTabId);
-    tabIndexCache.delete(removedTabId);
-
-    // Get all tabs in the window
-    const tabs = await chrome.tabs.query({ windowId });
-
-    // If only one tab left or no tabs, nothing to do
-    if (tabs.length <= 1) {
-      await cleanupTabData(removedTabId);
-      return;
+    // Only step in when the tab you were looking at was closed.
+    // Closing a background tab never changes which tab you're on.
+    if (!active || active.tabId !== removedTabId) {
+      return; // finally{} refreshes the active index, which may have shifted
     }
+
+    const tabs = await chrome.tabs.query({ windowId });
+    if (tabs.length <= 1) return;
 
     // Small delay to let Chrome's default focus happen first
     await sleep(FOCUS_DELAY_MS);
 
-    // Find the best tab to focus based on strategy
-    let targetTab = null;
-
-    if (strategy === STRATEGIES.PROXIMITY) {
-      targetTab = await findProximityTab(tabs, removedTabIndex);
-    } else if (strategy === STRATEGIES.LRU) {
-      targetTab = await findLRUTab(tabs);
-    } else {
-      // HYBRID strategy
-      targetTab = await findHybridTab(tabs, removedTabIndex);
-    }
+    const targetTab = pickTab(strategy, tabs, active.index, lru_data, Date.now());
 
     if (targetTab) {
-      // Focus the selected tab
-      await chrome.tabs.update(targetTab.id, { active: true });
+      const [current] = await chrome.tabs.query({ windowId, active: true });
+      if (!current || current.id !== targetTab.id) {
+        await chrome.tabs.update(targetTab.id, { active: true });
 
-      // Increment redirect count
-      const { redirect_count = 0 } = await chrome.storage.local.get(STORAGE_KEYS.REDIRECT_COUNT);
-      await chrome.storage.local.set({ [STORAGE_KEYS.REDIRECT_COUNT]: redirect_count + 1 });
+        const { redirect_count = 0 } = await chrome.storage.local.get(STORAGE_KEYS.REDIRECT_COUNT);
+        await chrome.storage.local.set({ [STORAGE_KEYS.REDIRECT_COUNT]: redirect_count + 1 });
 
-      console.log(`TabSnap: Focused tab ${targetTab.id} using ${strategy} strategy`);
+        console.log(`TabSnap: Focused tab ${targetTab.id} using ${strategy} strategy`);
+      }
     }
-
-    // Clean up storage for removed tab
-    await cleanupTabData(removedTabId);
-
   } catch (error) {
     console.error('TabSnap error:', error);
+  } finally {
     await cleanupTabData(removedTabId);
+    await rememberActiveTab(windowId);
   }
 });
 
-// Find tab using proximity strategy
-async function findProximityTab(tabs, removedTabIndex) {
-  if (removedTabIndex === undefined) {
-    // Fallback to first tab if we don't have the index
-    return tabs[0];
-  }
-
-  // Find closest tab by index
-  let closestTab = null;
-  let minDistance = Infinity;
-
-  for (const tab of tabs) {
-    const distance = Math.abs(tab.index - removedTabIndex);
-    if (distance < minDistance) {
-      minDistance = distance;
-      closestTab = tab;
-    }
-  }
-
-  return closestTab;
-}
-
-// Find tab using LRU strategy
-async function findLRUTab(tabs) {
-  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
-
-  let lruTab = null;
-  let latestTimestamp = 0;
-
-  for (const tab of tabs) {
-    const timestamp = lru_data[tab.id] || 0;
-    if (timestamp > latestTimestamp) {
-      latestTimestamp = timestamp;
-      lruTab = tab;
-    }
-  }
-
-  return lruTab || tabs[0]; // Fallback to first tab
-}
-
-// Find tab using hybrid strategy (proximity + LRU fallback)
-async function findHybridTab(tabs, removedTabIndex) {
-  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
-  const now = Date.now();
-
-  if (removedTabIndex === undefined) {
-    // If we don't have the index, fall back to LRU
-    return await findLRUTab(tabs);
-  }
-
-  // Find all tabs at minimum distance
-  let minDistance = Infinity;
-  const candidateTabs = [];
-
-  for (const tab of tabs) {
-    const distance = Math.abs(tab.index - removedTabIndex);
-    if (distance < minDistance) {
-      minDistance = distance;
-      candidateTabs.length = 0; // Clear previous candidates
-      candidateTabs.push(tab);
-    } else if (distance === minDistance) {
-      candidateTabs.push(tab);
-    }
-  }
-
-  // If only one candidate, check if it's stale (>5 minutes)
-  if (candidateTabs.length === 1) {
-    const tab = candidateTabs[0];
-    const lastUsed = lru_data[tab.id] || 0;
-    const timeSinceUse = now - lastUsed;
-
-    if (timeSinceUse > LRU_TIMEOUT_MS) {
-      // Tab is stale, fall back to LRU
-      return await findLRUTab(tabs);
-    }
-
-    return tab;
-  }
-
-  // Multiple candidates at same distance - pick most recently used
-  let bestTab = candidateTabs[0];
-  let latestTimestamp = lru_data[bestTab.id] || 0;
-
-  for (const tab of candidateTabs) {
-    const timestamp = lru_data[tab.id] || 0;
-    if (timestamp > latestTimestamp) {
-      latestTimestamp = timestamp;
-      bestTab = tab;
-    }
-  }
-
-  return bestTab;
-}
-
 // Clean up storage for removed tab
-async function cleanupTabData(tabId) {
-  const { lru_data = {} } = await chrome.storage.local.get(STORAGE_KEYS.LRU_DATA);
-  delete lru_data[tabId];
-  await chrome.storage.local.set({ [STORAGE_KEYS.LRU_DATA]: lru_data });
+function cleanupTabData(tabId) {
+  return updateLRU((lru) => { delete lru[tabId]; });
 }
 
-// Utility: sleep function
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
