@@ -47,3 +47,6 @@ wheels/
 
 # Node
 node_modules/
+
+# Netlify CLI local state
+.netlify/
