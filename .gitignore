@@ -17,6 +17,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+site-dist/
 downloads/
 eggs/
 .eggs/
@@ -43,3 +44,6 @@ wheels/
 # Temporary files
 *.tmp
 *.bak
+
+# Node
+node_modules/

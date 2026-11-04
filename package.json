@@ -1,0 +1,16 @@
+{
+  "name": "tabsnap",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Chrome extension that focuses the right tab when you close one",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/",
+    "test:e2e": "node tests/e2e.mjs",
+    "package": "bash scripts/package.sh",
+    "build:site": "bash scripts/build-site.sh"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.0.0"
+  }
+}

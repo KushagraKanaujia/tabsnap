@@ -1,209 +1,111 @@
 # ⚡ TabSnap
 
-**Smart tab focus behavior for Chrome**
+**A Chrome extension that picks a better tab to focus when you close the one you're on.**
 
-TabSnap is a Chrome extension that overrides the default tab focus behavior when you close a tab. Instead of always focusing the right neighbor (Chrome's default), TabSnap intelligently chooses the best tab using configurable strategies.
+[![Live demo](https://img.shields.io/badge/live_demo-kush--tabsnap.netlify.app-4caf50?logo=netlify&logoColor=white)](https://kush-tabsnap.netlify.app)
+[![Download](https://img.shields.io/badge/download-tabsnap--v1.1.0.zip-blue?logo=googlechrome&logoColor=white)](https://github.com/KushagraKanaujia/tabsnap/releases/download/v1.1.0/tabsnap-v1.1.0.zip)
+[![Manifest V3](https://img.shields.io/badge/manifest-v3-orange)](manifest.json)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-## Why TabSnap?
+## Try it in one click
 
-Chrome's default behavior when closing a tab is simple but not always ideal—it focuses the tab to the right. This can be frustrating when:
+- **See it without installing:** open the **[live demo](https://kush-tabsnap.netlify.app)**. It runs the extension's real strategy code on a pretend tab bar, so you can close tabs and compare where Chrome would send you with where TabSnap does.
+- **Install it (about 30 seconds):**
+  1. [Download `tabsnap-v1.1.0.zip`](https://github.com/KushagraKanaujia/tabsnap/releases/download/v1.1.0/tabsnap-v1.1.0.zip) and unzip it. You get a `tabsnap` folder.
+  2. Open `chrome://extensions` and turn on **Developer mode** (top right).
+  3. Click **Load unpacked** and pick the `tabsnap` folder. Click the ⚡ toolbar icon to choose a strategy.
 
-- You've been working with tabs on the left side of your closed tab
-- You frequently jump between non-adjacent tabs
-- You want to return to your most recently used tab instead
+Works in Chrome and other Chromium browsers (Edge, Brave, Arc). It is not on the Chrome Web Store yet.
 
-TabSnap gives you control over this behavior with three smart strategies.
+## What it does
 
-## Features
+When you close the tab you're looking at, Chrome usually jumps to the tab on its right, even if you never used that tab. TabSnap steps in right after the close and focuses a tab chosen by one of three strategies:
 
-- 🎯 **Three Focus Strategies**: Proximity, LRU, or Hybrid (default)
-- 💾 **Persistent Storage**: LRU tracking survives service worker sleep cycles
-- ⚡ **Lightweight**: No content scripts, minimal memory footprint
-- 🔒 **Privacy-First**: All data stored locally, no external requests
-- 📊 **Usage Stats**: Track how many times TabSnap has redirected focus
+| Strategy | Which tab gets focus |
+| --- | --- |
+| **Proximity** | The closed tab's neighbour. If both the left and right neighbour qualify, the one you used more recently. |
+| **LRU** | The tab you used most recently, wherever it sits in the tab bar. |
+| **Hybrid** (default) | Proximity, unless that neighbour hasn't been used for more than 5 minutes; then the most recently used tab. |
 
-## Installation
+Closing a **background** tab never changes which tab you're on. The popup also shows how many times TabSnap changed the focus away from Chrome's own pick.
 
-### From Source (Unpacked Extension)
+## How it works
 
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/yourusername/tabsnap.git
-   cd tabsnap
-   ```
+- `strategies.js`: the three strategies as pure functions (no `chrome.*` calls). The service worker, the unit tests and the landing-page demo all use this same file.
+- `background.js`: the MV3 service worker. It records when each tab was last activated (`chrome.storage.local`) and which tab is active in each window, with its index (`chrome.storage.session`, so it survives the worker going to sleep). When the active tab is closed it takes a snapshot of that state, waits ~50 ms for Chrome's default focus to land, then activates the strategy's pick if it differs.
+- `popup.html` / `popup.js`: the settings popup. The chosen strategy syncs through your Chrome profile (`chrome.storage.sync`).
 
-2. **Load in Chrome:**
-   - Open Chrome and navigate to `chrome://extensions`
-   - Enable **Developer mode** (toggle in top-right corner)
-   - Click **Load unpacked**
-   - Select the `tabsnap` folder
+Permissions: `tabs` and `storage` only. No content scripts and no network requests.
 
-3. **Done!** The extension icon should appear in your toolbar.
+### Fixed in v1.1.0
 
-### From Chrome Web Store
+An end-to-end test in real Chrome (`tests/e2e.mjs`) found these issues in v1.0.0, and they are fixed here:
 
-*Coming soon!*
+- Closing a background tab could steal focus from the tab you were on.
+- Proximity compared the closed tab's old index against the already-shifted indices, so it always chose the right neighbour (the same as Chrome's default) and never broke ties by recent use.
+- LRU could count Chrome's own default pick as "most recently used", so it often agreed with Chrome instead of going back to your previous tab.
 
-## Focus Strategies
+## Tech stack
 
-TabSnap offers three strategies for choosing which tab to focus when you close a tab:
+Chrome Extension Manifest V3 · plain JavaScript (no build step) · Node's built-in test runner · Puppeteer for end-to-end tests · landing page in plain HTML with [Pico CSS](https://picocss.com), deployed on Netlify.
 
-### 1. Proximity
+## Run locally
 
-**Focus the tab with the closest index to the one just closed.**
+```bash
+git clone https://github.com/KushagraKanaujia/tabsnap.git
+cd tabsnap
+```
 
-- Simple and predictable
-- Mimics the behavior of closing a file in a text editor
-- If the closed tab was at index 3, it focuses whichever remaining tab is closest to that position
+Then load the folder with **Load unpacked** in `chrome://extensions` (steps above). There is nothing to build.
 
-**Best for:** Users who organize tabs spatially and want predictable left/right navigation.
+Development commands (Node 18+):
 
-### 2. LRU (Least Recently Used)
+```bash
+npm test                         # unit tests for strategies.js
+npm install                      # installs Puppeteer for the e2e test
+npx puppeteer browsers install chrome
+npm run test:e2e                 # loads the extension into Chrome for Testing and closes real tabs
+npm run package                  # -> dist/tabsnap-v<version>.zip
+npm run build:site               # -> site-dist/ (landing page + live demo)
+```
 
-**Always focus the most recently used tab.**
+To debug, open `chrome://extensions`, find TabSnap and click **Inspect views: service worker**. Each redirect logs `TabSnap: Focused tab <id> using <strategy> strategy`.
 
-- Returns you to the tab you were last viewing
-- Great for tab-hoppers who jump around frequently
-- Ignores tab position entirely
+Icons are generated with `python3 generate_icons.py` (needs Pillow).
 
-**Best for:** Power users who frequently switch between non-adjacent tabs.
-
-### 3. Hybrid (Default)
-
-**Proximity-based with intelligent LRU fallback.**
-
-This is the sweet spot:
-
-1. **First, find the closest tab by index** (just like Proximity strategy)
-2. **If there's a tie**, pick the most recently used among the tied tabs
-3. **If the closest tab hasn't been used in over 5 minutes**, fall back to the most recently used tab instead
-
-**Why 5 minutes?** If you haven't touched a tab in 5 minutes, chances are it's not relevant to your current workflow. The Hybrid strategy recognizes this and returns you to your active context instead.
-
-**Best for:** Most users—balances spatial awareness with usage patterns.
-
-## Configuration
-
-Click the TabSnap extension icon to open the settings popup:
-
-- **Select your preferred strategy** (Proximity / LRU / Hybrid)
-- **View redirect count** to see how many times TabSnap has changed focus
-
-Settings are synced across Chrome instances using `chrome.storage.sync`.
-
-## Technical Details
-
-- **Manifest Version:** 3
-- **Permissions:** `tabs`, `storage`
-- **Architecture:** Service worker only (no content scripts)
-- **Storage:**
-  - `chrome.storage.local`: LRU timestamps and redirect count (persists across service worker cycles)
-  - `chrome.storage.sync`: User strategy preference (syncs across devices)
-
-### How It Works
-
-1. **Tab Activation Tracking**: When you switch to a tab, TabSnap records the timestamp in `chrome.storage.local`
-2. **Index Caching**: The `onActivated` listener caches each tab's index because `onRemoved` fires after the tab is already deleted
-3. **Focus Override**: When a tab closes, TabSnap waits ~50ms (to let Chrome's default focus settle), then applies the selected strategy to choose the best tab
-4. **Cleanup**: Removed tabs are purged from LRU storage to prevent memory leaks
-
-### Edge Cases Handled
-
-- ✅ Last tab in window (does nothing)
-- ✅ Window closing (skips focus override)
-- ✅ Service worker sleep cycles (uses persistent storage)
-- ✅ Pinned tabs (treated like normal tabs)
-- ✅ Tab groups (treated like normal tabs)
-- ✅ Incognito windows (works independently in each context)
-
-## Development
-
-### Project Structure
+### Project structure
 
 ```
 tabsnap/
-├── manifest.json       # Extension manifest (V3)
-├── background.js       # Service worker with tab focus logic
-├── popup.html          # Settings UI
-├── popup.js            # Settings logic
-├── icons/              # Extension icons (16, 48, 128)
-│   ├── icon16.png
-│   ├── icon48.png
-│   └── icon128.png
-├── generate_icons.py   # Script to generate placeholder icons
-└── README.md
+├── manifest.json        # Extension manifest (V3)
+├── background.js        # Service worker: tracks tabs, applies the strategy
+├── strategies.js        # Pure strategy logic (shared by worker, tests, demo)
+├── popup.html / .js     # Settings popup
+├── icons/               # 16 / 48 / 128 px icons
+├── site/                # Landing page + interactive demo (Netlify)
+├── tests/               # Unit tests + Puppeteer end-to-end test
+├── scripts/             # package.sh (release zip), build-site.sh
+└── generate_icons.py
 ```
-
-### Building Icons
-
-Icons are generated programmatically using Python:
-
-```bash
-python3 generate_icons.py
-```
-
-### Debugging
-
-1. Open `chrome://extensions`
-2. Find TabSnap and click **Inspect views: service worker**
-3. Check the console for logs like:
-   ```
-   TabSnap: Focused tab 123 using hybrid strategy
-   ```
-
-### Testing
-
-To test the extension:
-
-1. Open several tabs
-2. Switch between them to build LRU history
-3. Close a middle tab and observe which tab gets focused
-4. Try different strategies in the popup and compare behavior
-
-## Contributing
-
-Contributions are welcome! Here's how you can help:
-
-### Reporting Issues
-
-- Check if the issue already exists in [Issues](https://github.com/yourusername/tabsnap/issues)
-- Include Chrome version, OS, and steps to reproduce
-- For focus behavior bugs, include the tab layout and which tab was closed
-
-### Pull Requests
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Make your changes with clear commit messages
-4. Test thoroughly in Chrome
-5. Submit a PR with a clear description
-
-### Code Style
-
-- Use clear, descriptive variable names
-- Add comments for complex logic
-- Keep functions focused and single-purpose
-- Follow the existing code style (2-space indents, semicolons)
 
 ## Roadmap
 
-Potential future enhancements:
-
-- [ ] Exclude certain tabs from focus (e.g., pinned tabs)
+- [ ] Exclude certain tabs from focus (e.g. pinned tabs)
 - [ ] Per-window strategy override
 - [ ] Customizable LRU timeout
-- [ ] Tab groups awareness (stay within group)
-- [ ] Export/import settings
-- [ ] Dark/light theme toggle for popup
+- [ ] Tab-group awareness (stay within the group)
+- [ ] Chrome Web Store listing
+
+## Contributing
+
+Issues and pull requests are welcome. For focus bugs, please include your Chrome version, the tab layout and which tab you closed. Run `npm test` (and ideally `npm run test:e2e`) before opening a PR.
+
+## Credits
+
+- [Pico CSS](https://github.com/picocss/pico) (MIT): styling for the landing page, loaded from jsDelivr.
+- [Puppeteer](https://github.com/puppeteer/puppeteer) (Apache-2.0): end-to-end tests in Chrome for Testing.
+- [Shields.io](https://shields.io) (CC0): README badges.
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Acknowledgments
-
-Built with frustration after closing the wrong tab one too many times. 😅
-
----
-
-**Like TabSnap?** Star the repo and share it with fellow tab hoarders!
+[MIT](LICENSE)

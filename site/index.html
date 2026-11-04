@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TabSnap: smarter tab focus</title>
+  <meta name="description" content="TabSnap is a free, open-source Chrome extension that picks a better tab to focus when you close the one you're on.">
+  <link rel="icon" href="icon128.png">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2.1.1/css/pico.min.css">
+  <style>
+    :root { --ts-accent: #4caf50; }
+    .hero { text-align: center; padding-top: 2rem; }
+    .hero img { width: 72px; height: 72px; border-radius: 16px; }
+    .hero h1 { margin: .5rem 0 .25rem; }
+    .cta { display: flex; gap: .75rem; justify-content: center; flex-wrap: wrap; margin-top: 1rem; }
+    .strip { display: flex; gap: 4px; overflow-x: auto; padding: 6px; border-radius: 10px;
+             background: var(--pico-card-sectioning-background-color); }
+    .tab { flex: 1 1 0; min-width: 72px; display: flex; align-items: center; justify-content: space-between;
+           gap: 4px; padding: 8px 8px; border-radius: 8px; cursor: pointer; user-select: none;
+           border: 2px solid transparent; background: var(--pico-card-background-color); font-size: .9rem; }
+    .tab.active { border-color: var(--ts-accent); font-weight: 700; }
+    .tab.flash { animation: flash .9s ease-out; }
+    @keyframes flash { from { box-shadow: 0 0 0 6px rgba(76,175,80,.55); } to { box-shadow: 0 0 0 0 rgba(76,175,80,0); } }
+    .tab small { color: var(--pico-muted-color); font-weight: 400; display: block; font-size: .7rem; }
+    .tab button { all: unset; cursor: pointer; padding: 0 4px; border-radius: 4px; line-height: 1.2; }
+    .tab button:hover { background: rgba(127,127,127,.25); }
+    .controls { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; }
+    .controls select, .controls button { width: auto; margin: 0; }
+    #log { min-height: 3rem; }
+    .steps { counter-reset: s; list-style: none; padding: 0; }
+    .steps li { counter-increment: s; position: relative; padding-left: 2.5rem; margin-bottom: 1rem; list-style: none; }
+    .steps li::before { content: counter(s); position: absolute; left: 0; top: -.1rem; width: 1.8rem; height: 1.8rem;
+      border-radius: 50%; background: var(--ts-accent); color: #fff; display: grid; place-items: center; font-weight: 700; }
+    code { white-space: nowrap; }
+    footer { text-align: center; font-size: .85rem; color: var(--pico-muted-color); }
+  </style>
+</head>
+<body>
+<main class="container">
+  <section class="hero">
+    <img src="icon128.png" alt="TabSnap icon">
+    <h1>TabSnap</h1>
+    <p>When you close the tab you're on, Chrome usually just jumps to the tab on its right.<br>
+      TabSnap picks a better one: the nearest tab you actually used, or the one you were just on.</p>
+    <div class="cta">
+      <a role="button" href="https://github.com/KushagraKanaujia/tabsnap/releases/download/v1.1.0/tabsnap-v1.1.0.zip">Download extension (.zip)</a>
+      <a role="button" class="secondary outline" href="#demo">Try it in your browser</a>
+      <a role="button" class="contrast outline" href="https://github.com/KushagraKanaujia/tabsnap">Source on GitHub</a>
+    </div>
+  </section>
+
+  <article id="demo">
+    <header><strong>Live demo</strong>: this runs the extension's real strategy code (<code>strategies.js</code>) on a pretend tab bar.</header>
+    <p>Click tabs to visit them, then close the active one with <strong>×</strong>. Compare where Chrome would send you vs. TabSnap.</p>
+    <div class="strip" id="strip" role="tablist" aria-label="Simulated tabs"></div>
+    <div class="controls">
+      <label>Strategy
+        <select id="strategy">
+          <option value="hybrid" selected>Hybrid (default)</option>
+          <option value="proximity">Proximity</option>
+          <option value="lru">LRU (most recently used)</option>
+        </select>
+      </label>
+      <button class="secondary" id="skip">Wait 6 minutes ⏩</button>
+      <button class="outline" id="reset">Reset tabs</button>
+    </div>
+    <p id="log" aria-live="polite"></p>
+  </article>
+
+  <section>
+    <h2>Install in 3 steps</h2>
+    <ol class="steps">
+      <li><a href="https://github.com/KushagraKanaujia/tabsnap/releases/download/v1.1.0/tabsnap-v1.1.0.zip">Download the zip</a> and unzip it. You'll get a <code>tabsnap</code> folder.</li>
+      <li>Open <code>chrome://extensions</code> and switch on <strong>Developer mode</strong> (top right).</li>
+      <li>Click <strong>Load unpacked</strong> and pick the <code>tabsnap</code> folder. Click the ⚡ icon in the toolbar to choose a strategy.</li>
+    </ol>
+    <p><small>Works in Chrome and other Chromium browsers (Edge, Brave, Arc). It isn't on the Chrome Web Store yet.</small></p>
+  </section>
+
+  <section>
+    <h2>The three strategies</h2>
+    <div class="grid">
+      <article><h4>Proximity</h4>Go to the neighbour of the closed tab. If both the left and right neighbour qualify, go to the one you used more recently.</article>
+      <article><h4>LRU</h4>Go back to the tab you used most recently, wherever it is in the tab bar.</article>
+      <article><h4>Hybrid</h4>Proximity, unless the neighbour hasn't been used for over 5 minutes. Then go back to your most recent tab.</article>
+    </div>
+  </section>
+
+  <section>
+    <h2>Privacy</h2>
+    <p>TabSnap only asks for the <code>tabs</code> and <code>storage</code> permissions. It has no content scripts, makes no network requests,
+      and stores tab-use timestamps only on your machine. Your strategy choice syncs through your Chrome profile.</p>
+  </section>
+</main>
+<footer class="container">
+  <p>MIT licensed · Styled with <a href="https://picocss.com">Pico CSS</a> (MIT)</p>
+</footer>
+
+<script src="strategies.js"></script>
+<script>
+  const S = window.TabSnapStrategies;
+  const strip = document.getElementById('strip');
+  const log = document.getElementById('log');
+  const strategySel = document.getElementById('strategy');
+  const NAMES = ['Inbox', 'Docs', 'GitHub', 'Figma', 'News', 'Music'];
+  let tabs, active, lru, clock, nextId;
+
+  function reset() {
+    clock = 10 * 60 * 1000; nextId = 0; lru = {};
+    tabs = NAMES.map((name) => ({ id: nextId++, name }));
+    tabs.forEach((t) => { lru[t.id] = clock - 60 * 1000; });
+    active = tabs[2].id; lru[active] = clock;
+    log.textContent = 'Try this: click Docs, then GitHub, then close GitHub with ×. Chrome jumps right to Figma; TabSnap takes you back to Docs.';
+    render();
+  }
+
+  function ago(id) {
+    const m = Math.round((clock - lru[id]) / 60000);
+    return m <= 0 ? 'just now' : m + ' min ago';
+  }
+
+  function render(flashId) {
+    strip.innerHTML = '';
+    tabs.forEach((t) => {
+      const el = document.createElement('div');
+      el.className = 'tab' + (t.id === active ? ' active' : '') + (t.id === flashId ? ' flash' : '');
+      el.setAttribute('role', 'tab');
+      el.setAttribute('aria-selected', t.id === active);
+      el.innerHTML = `<span>${t.name}<small>${ago(t.id)}</small></span>`;
+      const x = document.createElement('button');
+      x.textContent = '×'; x.title = 'Close ' + t.name; x.setAttribute('aria-label', 'Close ' + t.name);
+      x.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
+      el.appendChild(x);
+      el.onclick = () => { clock += 30 * 1000; active = t.id; lru[t.id] = clock; render(); };
+      strip.appendChild(el);
+    });
+  }
+
+  function closeTab(id) {
+    if (tabs.length <= 1) { log.textContent = 'That is the last tab. Press Reset to start over.'; return; }
+    const removedIndex = tabs.findIndex((t) => t.id === id);
+    const closed = tabs[removedIndex];
+    tabs.splice(removedIndex, 1);
+    delete lru[id];
+    if (id !== active) {
+      log.textContent = `Closed background tab "${closed.name}". TabSnap leaves you where you are.`;
+      render(); return;
+    }
+    const remaining = tabs.map((t, index) => ({ id: t.id, index }));
+    const chrome = tabs[Math.min(removedIndex, tabs.length - 1)];
+    const pick = S.pickTab(strategySel.value, remaining, removedIndex, lru, clock);
+    const picked = tabs.find((t) => t.id === pick.id);
+    active = picked.id; clock += 1000; lru[active] = clock;
+    const same = picked.id === chrome.id;
+    log.innerHTML = `Closed <strong>${closed.name}</strong>. Chrome would focus <strong>${chrome.name}</strong>; ` +
+      `TabSnap (${strategySel.options[strategySel.selectedIndex].text}) focused <strong>${picked.name}</strong>` +
+      (same ? ' (same choice here).' : '.');
+    render(picked.id);
+  }
+
+  document.getElementById('skip').onclick = () => { clock += 6 * 60 * 1000; log.textContent = 'Six minutes pass. Tabs you have not touched since then now count as stale, so Hybrid will skip them.'; render(); };
+  document.getElementById('reset').onclick = reset;
+  reset();
+</script>
+</body>
+</html>
